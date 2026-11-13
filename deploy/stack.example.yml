@@ -1,0 +1,110 @@
+# Company Intranet — apps/portal (en/ru/az): home, HR news + editor, AD directory, org chart, HR documents,
+# birthdays, banner, meeting rooms + booking, weekly news e-mail, weather, HSE board + hazard reports, certificates &
+# training, IT Help Center. Replaces the nginx landing page and
+# ab.example.com (old PHP address book on 10.0.0.x). Image tag is set by .github/workflows/portal.yml.
+services:
+  web:
+    image: ghcr.io/OWNER/portal:ec50b998bbcca69f747fe407810e45ca88e4aba7
+    environment:
+      TZ: Asia/Baku
+      DB_HOST: db.example.com
+      DB_PASSWORD_FILE: /run/secrets/portal_db_password
+      LDAP_PASSWORD_FILE: /run/secrets/portal_ldap_password
+      LDAP_BIND: svc-portal@example.com
+      LDAP_CA: /etc/ssl/company-ca.pem
+      UPLOAD_DIR: /data/uploads
+      # HR documents: Cloud folder "HR Sənədləri" of local Cloud user `intranet`, shared (edit) with AD group NC-HR-Docs
+      CLOUD_USER: intranet
+      CLOUD_TOKEN_FILE: /run/secrets/portal_cloud_token
+      # weather on the home page (Open-Meteo)
+      WEATHER_PLACES: "Bakı:40.4093:49.8671"
+      # mail (weekly news, HSE reports, certificate reminders) + room booking: AD/Exchange account svc-intranet
+      # (mailbox intranet@, Send As hrnews@). ROOMS = "Name|mail;Name|mail" once the room mailboxes exist.
+      SVC_PASSWORD_FILE: /run/secrets/portal_svc_password
+      # SMTP_HOST default mail.example.com:587 (Client Frontend connectors use the *.example.com cert since 2026-11-02)
+      ROOMS: "Meeting Room 4|meetingroom4@example.com;Meeting Room 5|meetingroom5@example.com"
+      DIGEST_ENABLED: "1"
+      DIGEST_TO: allstaff@example.com
+      DIGEST_FROM: hrnews@example.com
+      # HSE reports, action updates + certificate reminders go to HSE_MAIL; reminders (60/30/7/0 days, manager from 30,
+      # monthly summary on the 1st) once CERT_ALERTS=1 and mail works
+      HSE_MAIL: hse@example.com
+      CERT_ALERTS: "1"
+      # Report a problem → ServiceDesk Plus request (API v3) once SDP_KEY_FILE points to a technician API key secret;
+      # until then the request is e-mailed to HELPDESK_MAIL (Reply-To = the reporter)
+      SDP_URL: https://helpdesk.example.com
+      HELPDESK_MAIL: helpdesk@example.com
+      PHONE_URL: https://company.3cx.example:5001/
+      # self-service profile + 3CX→AD ipPhone: svc-intranet-ad (write: phone, mobile, office, photo, ipPhone in OU=Company)
+      AD_WRITE_PASSWORD_FILE: /run/secrets/portal_ad_write_password
+      AD_HR_WRITE_PASSWORD_FILE: /run/secrets/portal_ad_hr_write_password   # svc-intranet-hr: HR People page (title, department, company, manager)
+      KC_EVENTS_SECRET_FILE: /run/secrets/portal_kc_events_secret   # Keycloak client intranet-events: e-mail when a passkey is added
+      # 3CX XAPI client (3CX Admin → Integrations → API); presence/click-to-call start once the client id + secret exist
+      THREECX_URL: https://3cx.example.com:5001
+      THREECX_CLIENT_ID: ""
+      THREECX_SYNC: dryrun
+      # roles = AD groups: Intranet-HR-Editors (HR), Intranet-HSE-Editors (HSE), Intranet-IT-Editors (IT)
+    volumes:
+      - portal_uploads:/data/uploads
+    configs:
+      - {source: ca, target: /etc/ssl/company-ca.pem}
+      - {source: brand_css, target: /srv/app/static/brand.css}
+      - {source: brand_logo, target: /srv/app/static/logo.png}
+      - {source: brand_logo_white, target: /srv/app/static/logo-white.png}
+      - {source: brand_icon, target: /srv/app/static/icon.png}
+      - {source: brand_app192, target: /srv/app/static/app-192.png}
+      - {source: brand_app512, target: /srv/app/static/app-512.png}
+      - {source: brand_maskable, target: /srv/app/static/app-maskable-512.png}
+      - {source: brand_badge, target: /srv/app/static/badge-96.png}
+    secrets: [portal_db_password, portal_ldap_password, portal_cloud_token, portal_svc_password, portal_ad_write_password, portal_ad_hr_write_password, portal_kc_events_secret]
+    networks: [traefik-public]
+    deploy:
+      replicas: 2
+      placement: {constraints: [node.labels.zone == lan], max_replicas_per_node: 1}
+      resources: {limits: {memory: 384M}}
+      update_config: {parallelism: 1, delay: 10s, order: start-first}
+      labels:
+        traefik.enable: "true"
+        traefik.http.routers.portal.rule: Host(`intranet.example.com`)
+        traefik.http.routers.portal.entrypoints: websecure
+        traefik.http.routers.portal.middlewares: hsts@file
+        traefik.http.services.portal.loadbalancer.server.port: "8080"
+        # old address book: ab.example.com/input.php?too=X → /directory?q=X, detailed.php?uid=X → /directory/X
+        traefik.http.routers.ab.rule: Host(`ab.example.com`)
+        traefik.http.routers.ab.entrypoints: websecure
+        traefik.http.routers.ab.service: portal
+        traefik.http.routers.ab.middlewares: ab-search,ab-detail,ab-rest
+        traefik.http.middlewares.ab-search.redirectregex.regex: ^https?://ab\.company\.az/input\.php\?too=([^&]*).*
+        traefik.http.middlewares.ab-search.redirectregex.replacement: https://intranet.example.com/directory?q=$${1}
+        traefik.http.middlewares.ab-detail.redirectregex.regex: ^https?://ab\.company\.az/detailed\.php\?uid=([^&]*).*
+        traefik.http.middlewares.ab-detail.redirectregex.replacement: https://intranet.example.com/directory/$${1}
+        traefik.http.middlewares.ab-rest.redirectregex.regex: ^https?://ab\.company\.az/.*
+        traefik.http.middlewares.ab-rest.redirectregex.replacement: https://intranet.example.com/directory
+
+volumes:
+  portal_uploads:
+    driver: local
+    driver_opts: {type: nfs4, o: "addr=10.0.0.x,vers=4.2,rw,hard,noatime", device: ":/portal/uploads"}
+
+configs:
+  ca: {file: ../../common/company-ca.pem, name: "portal_ca_${CFG_HASH}"}
+  brand_css: {file: ../../branding/brand.css, name: "portal_brand_css_${CFG_HASH}"}
+  brand_logo: {file: ../../branding/logo.png, name: "portal_brand_logo_${CFG_HASH}"}
+  brand_logo_white: {file: ../../branding/logo-white.png, name: "portal_brand_logo_white_${CFG_HASH}"}
+  brand_icon: {file: ../../branding/icon.png, name: "portal_brand_icon_${CFG_HASH}"}
+  brand_app192: {file: ../../branding/app-192.png, name: "portal_brand_app192_${CFG_HASH}"}
+  brand_app512: {file: ../../branding/app-512.png, name: "portal_brand_app512_${CFG_HASH}"}
+  brand_maskable: {file: ../../branding/app-maskable-512.png, name: "portal_brand_maskable_${CFG_HASH}"}
+  brand_badge: {file: ../../branding/badge-96.png, name: "portal_brand_badge_${CFG_HASH}"}
+
+secrets:
+  portal_db_password: {external: true}
+  portal_ldap_password: {external: true}
+  portal_cloud_token: {external: true}
+  portal_svc_password: {external: true}
+  portal_ad_write_password: {external: true}
+  portal_ad_hr_write_password: {external: true}
+  portal_kc_events_secret: {external: true}
+
+networks:
+  traefik-public: {external: true}

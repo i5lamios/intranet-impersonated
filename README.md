@@ -1,37 +1,44 @@
-# intranet-ui-check
+# Intranet portal
 
-See an intranet exactly as a real user sees it — without knowing their password — by impersonating them
-through the **Keycloak admin API** in a headless Chromium, then screenshotting pages and catching JS errors.
+Company intranet: FastAPI backend + TypeScript/React frontend, one Docker image. Sign-in via Keycloak (OIDC, public
+client with PKCE); authorisation = AD security groups passed in the token's `groups` claim. Languages en / ru / az.
 
-Works for any app behind the same Keycloak realm (intranet portal, file cloud, wiki …): the impersonation sets the
-Keycloak SSO cookies in the browser context, so every OIDC/SAML client signs in silently.
+Ported from a previous deployment by the same author. Hostnames, company name, domain and people were replaced with
+placeholders (`example.com`, `Company`, `admin.user`, `10.0.0.x`). **Adapt them before deploying.** No secrets are in this repo.
 
-## Files
-| file | purpose |
+## Layout
+| path | what |
 |---|---|
-| `asme.py` | `asme.py [--mobile] <username> <url>...` → screenshots in `./shots`, prints landing URL and any JS `pageerror`; exit 1 on errors. `session()` is importable for custom scripted flows. |
-| `smoke.py` | Login-free post-deploy check: load URLs, fail on `pageerror` / failed script request. Run after every frontend deploy. |
-| `setup-playwright.sh` | Installs Playwright from PyPI wheels into `./pwlib` on hosts with no pip. **Untested on a fresh host — verify the wheel picks.** |
+| `portal/app/` | FastAPI API (`main.py` routes; one module per feature) — serves the built frontend from `app/static` |
+| `portal/web/` | React + Vite frontend (`src/pages`, `src/components`, UI strings in `src/lib/dict.ts`; TinyMCE self-hosted in `public/vendor`) |
+| `portal/Dockerfile` | 2-stage build: node 20 → `npm run build` (type-checks), python 3.13 → uvicorn :8080 |
+| `deploy/stack.example.yml` | Docker Swarm stack as it ran (Traefik labels, NFS uploads volume, Swarm secrets, branding configs) |
+| `deploy/SETUP-NOTES.md` | Per-feature notes: DB, AD service accounts and rights, roles, mail, 3CX, room booking, push |
+| `deploy/ci-workflow.example.yml` | CI template (move to `.github/workflows/` when ready): build → GHCR → pin tag in the stack → deploy via self-hosted runner (adapt) |
 
-## Configuration (env vars, or `KC_ENV_FILE=/path/to/file` with `KEY=VALUE` lines — keep that file outside the repo)
-`KC_URL`, `KC_REALM`, `KC_ADMIN_USER`, `KC_ADMIN_PASSWORD`; optional `KC_ADMIN_REALM` (default `master`), `CHROMIUM`, `SHOTS_DIR`.
+## Features (module → page)
+news + editor (`main.py`, TinyMCE, nh3 sanitising) · directory + org chart from AD (`directory.py`) · HR people editing →
+AD (`hrpeople.py`) · own profile → AD (`profile.py`) · HR documents from Nextcloud (`cloud_docs.py`) · meeting rooms via
+Exchange EWS (`rooms.py`, `roomops.py`) · weekly news e-mail (`digest.py`) · weather (`weather.py`, Open-Meteo) ·
+HSE board + hazard reports (`hse.py`) · certificates/training (`certs.py`) · Help Center (`helpcenter.py`, seed `helpseed.py`) ·
+IT helpdesk → ServiceDesk Plus or mail (`helpdesk.py`) · Web Push (`push.py`) · analytics (`analytics.py`) · audit (`audit.py`) ·
+passkey-added alerts from Keycloak events (`passkeyalerts.py`) · 3CX presence/click-to-call/sync (`threecx.py`).
+Drop modules the new company does not need (remove the router include in `main.py` and the page in `web/src`).
 
-## Run
+## Configuration
+All via environment variables (see `deploy/stack.example.yml`); passwords via `*_FILE` pointing to Docker secrets.
+Key ones: `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `DB_HOST`/`DB_PASSWORD_FILE` (PostgreSQL), `LDAP_HOSTS`, `LDAP_BASE`,
+`LDAP_BIND`/`LDAP_PASSWORD_FILE`, `LDAP_CA`, `EDITOR_GROUP`/`HSE_GROUP`/`IT_GROUP` (AD group names), `SITE_URL`,
+`EWS_URL`, `SMTP_HOST`, `ROOMS`, `CLOUD_URL`. Grep `os.environ.get(` in `portal/app` for the full list and defaults —
+**defaults still point at `example.com` placeholders.**
+
+## Branding
+The stack mounts `brand.css`, `logo.png`, `logo-white.png`, `icon.png`, `app-*.png`, `badge-96.png` into `app/static/`
+from a `branding/` folder that is NOT included — create one for the new company.
+
+## Build / run
 ```
-KC_ENV_FILE=~/secrets/keycloak.env PYTHONPATH=./pwlib python3 asme.py jdoe https://intranet.example.com/ https://intranet.example.com/rooms
-python3 smoke.py https://intranet.example.com/        # needs playwright importable too (PYTHONPATH=./pwlib)
+cd portal && docker build -t intranet .
+cd portal/web && npm ci && npm run build      # frontend only, type-check
 ```
-
-## Facts that matter
-- Endpoint: `POST {KC_URL}/admin/realms/{realm}/users/{id}/impersonation` with a bearer admin token. The cookies come back
-  on that response, so the request must go through the **browser context's** request object (`ctx.request`), which shares its cookie jar.
-- Admin token (admin-cli, password grant) lives ~60 s → fetch a fresh one per session; never cache it.
-- The admin needs the `impersonation` role of `realm-management` (and `view-users`). Prefer a dedicated account over the master admin.
-- Every impersonation is audit-logged in Keycloak (admin events / `IMPERSONATE`). Tell the user whose view you are using and get their OK.
-- Keycloak < 17 serves under `/auth`: put it in `KC_URL`.
-- Impersonating a user does not bypass app-level authorisation — you see exactly what that user's groups/roles allow. That is the point.
-- Use the system Chromium (`apt install chromium`); don't run `playwright install` (version mismatch). Needs `--no-sandbox` when run as root/in containers.
-- Why the smoke test exists: one bad JS module can blank every page; screenshots of only the changed pages won't show it.
-
-## Not included on purpose
-No hostnames, realms, usernames or credentials. Supply your own via env.
+After every deploy, load the site headless and fail on any JS `pageerror` — one broken module blanks every page.

@@ -1,5 +1,5 @@
-shots/
-pwlib/
-.wheels/
+node_modules/
+dist/
 __pycache__/
 *.env
+secrets/

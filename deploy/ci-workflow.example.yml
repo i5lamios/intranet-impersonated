@@ -1,0 +1,32 @@
+name: portal
+on:
+  push:
+    branches: [main]
+    paths: ["portal/**"]
+  workflow_dispatch:
+permissions: {contents: write, packages: write}
+concurrency: {group: swarm-deploy, cancel-in-progress: false}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      - uses: docker/build-push-action@v6
+        with: {context: portal, push: true, tags: "ghcr.io/OWNER/portal:${{ github.sha }}"}
+  deploy:
+    needs: build
+    runs-on: [self-hosted, swarm-deploy]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Pin the new image in stacks/portal (git = source of truth)
+        run: |
+          git pull -q --rebase origin main
+          sed -i -E "s#(image: ghcr.io/OWNER/portal:)[^ ]+#\1${GITHUB_SHA}#" deploy/stack.yml
+          git -c user.name=ci -c user.email=ci@example.com commit -qam "portal: ${GITHUB_SHA::7}" && git push -q origin HEAD:main || echo "already pinned"
+      - name: Log in to GHCR on the managers
+        run: for c in swarm-01 swarm-02 swarm-03; do echo "${{ secrets.GITHUB_TOKEN }}" | docker --context $c login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null || true; done
+      - run: scripts/deploy.sh portal
