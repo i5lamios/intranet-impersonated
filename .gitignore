@@ -1,0 +1,5 @@
+shots/
+pwlib/
+.wheels/
+__pycache__/
+*.env
